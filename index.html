@@ -228,6 +228,7 @@ const gErr=m=>Object.assign(new Error(m),{german:true});
 let errOpen=null;
 function showError(title,items,help){
   items=(items||[]).map(x=>typeof x==='string'?{file:'',msg:x}:x);
+  if(errOpen&&!errOpen.isConnected)errOpen=null;
   if(errOpen){/* bereits offen → Einträge anhängen */const ul=errOpen.querySelector('.err-list');items.forEach(x=>ul.insertAdjacentHTML('beforeend',errLi(x)));return;}
   const m=document.createElement('div');m.className='modal-overlay';m.setAttribute('role','alertdialog');m.setAttribute('aria-modal','true');
   m.innerHTML=`<div class="modal-content err"><h2>⛔ ${esc(title)}</h2><ul class="err-list">${items.map(errLi).join('')}</ul>${help?`<p class="err-help">${esc(help)}</p>`:''}<div class="modal-actions"><button type="button" class="btn-secondary" data-copy>📋 Fehler kopieren</button><button type="button" data-ok>OK</button></div></div>`;
@@ -439,29 +440,112 @@ const isVideoFile=f=>/^video\//.test(f.type||'')||VID_EXT.test(f.name||'');
 const isImageFile=f=>/^image\//.test(f.type||'')||IMG_EXT.test(f.name||'');
 function wmPick(){const inp=document.createElement('input');inp.type='file';inp.accept='image/*,video/*';inp.multiple=true;inp.onchange=()=>wmAddFiles([...(inp.files||[])]);inp.click();}
 const MEDIA_ERR={1:'Das Laden wurde abgebrochen.',2:'Die Datei konnte nicht vollständig gelesen werden.',3:'Das Video ist beschädigt oder nutzt einen Codec, den dieser Browser nicht entschlüsseln kann.',4:'Dieses Videoformat wird von diesem Browser nicht unterstützt (häufig HEVC/H.265 von iPhones).'};
-const vidErr=v=>gErr(v&&v.error&&MEDIA_ERR[v.error.code]||'Video konnte nicht gelesen werden.');
+/* conv: true = Browser kann das Video nicht entschlüsseln → Umwandlung anbieten */
+const convErr=m=>Object.assign(gErr(m),{conv:true});
+const vidErr=v=>{const c=v&&v.error&&v.error.code;return c===3||c===4?convErr(MEDIA_ERR[c]):gErr(MEDIA_ERR[c]||'Video konnte nicht gelesen werden.');};
+/* Unsichtbares, aber eingehängtes Video-Element – iPhone/Safari laden sonst teils keine Bilddaten */
+function wmHiddenVideo(){const v=document.createElement('video');v.muted=true;v.defaultMuted=true;v.playsInline=true;v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','');v.setAttribute('muted','');v.preload='auto';
+  v.style.cssText='position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none';document.body.appendChild(v);return v;}
 /* Video öffnen und ein Standbild (bei ca. 10 %, höchstens 1 s) für die Vorschau holen */
-function wmLoadVideo(url){return new Promise((res,rej)=>{const v=document.createElement('video');v.muted=true;v.playsInline=true;v.preload='auto';let done=false;
-  const end=()=>{v.removeAttribute('src');try{v.load();}catch(e){/* still */}};
-  const fail=e=>{if(done)return;done=true;clearTimeout(to);end();rej(e);};
-  const to=setTimeout(()=>fail(gErr('Das Video lädt nicht (Zeitüberschreitung nach 20 s). Möglicherweise ist das Format nicht unterstützt.')),20000);
+function wmLoadVideo(url){return new Promise((res,rej)=>{const v=wmHiddenVideo();let done=false,seekTo=0;
+  const end=()=>{clearTimeout(to);clearTimeout(st);try{v.pause();}catch(e){/* still */}v.removeAttribute('src');try{v.load();}catch(e){/* still */}v.remove();};
+  const fail=e=>{if(done)return;done=true;end();rej(e);};
+  const dur=()=>isFinite(v.duration)&&v.duration>0?v.duration:0;
+  /* Standbild abgreifen – Dauer VOR dem Aufräumen lesen */
+  const grab=()=>{if(done)return;const w=v.videoWidth,h=v.videoHeight;if(!w||!h)return fail(convErr('Die Videospur kann dieser Browser nicht anzeigen (oft HEVC/H.265 vom iPhone) – oder die Datei enthält nur Ton.'));
+    try{const k=Math.min(1,1600/Math.max(w,h)),c=document.createElement('canvas');c.width=Math.max(1,Math.round(w*k));c.height=Math.max(1,Math.round(h*k));c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+      const d=dur();done=true;end();res({poster:c,w,h,duration:d});}catch(e){fail(e);}};
+  let st=0;
+  const to=setTimeout(()=>{if(v.readyState>=2&&v.videoWidth)return grab();fail(convErr('Das Video lädt nicht (Zeitüberschreitung nach 30 s) – das Format wird von diesem Browser vermutlich nicht unterstützt.'));},30000);
   v.onerror=()=>fail(vidErr(v));
-  v.onloadedmetadata=()=>{if(!v.videoWidth||!v.videoHeight)return fail(gErr('Die Datei enthält keine Videospur (nur Ton?) oder das Bildformat wird nicht unterstützt.'));
-    const d=isFinite(v.duration)?v.duration:0;v.currentTime=Math.min(1,d*.1)||0.001;};
-  v.onseeked=()=>{if(done)return;try{const w=v.videoWidth,h=v.videoHeight,k=Math.min(1,1600/Math.max(w,h));
-    const c=document.createElement('canvas');c.width=Math.round(w*k);c.height=Math.round(h*k);c.getContext('2d').drawImage(v,0,0,c.width,c.height);
-    done=true;clearTimeout(to);end();res({poster:c,w,h,duration:isFinite(v.duration)?v.duration:0});}catch(e){fail(e);}};
-  v.src=url;});}
+  v.onloadeddata=async()=>{if(done)return;if(!v.videoWidth||!v.videoHeight)return grab();
+    /* kurz anspielen: iPhone/Safari liefern erst danach echte Einzelbilder */
+    try{const p=v.play();if(p&&p.then)await Promise.race([p,new Promise(r=>setTimeout(r,1500))]);}catch(e){/* nicht schlimm */}try{v.pause();}catch(e){/* still */}
+    if(done)return;seekTo=Math.min(1,dur()*.1);
+    if(seekTo>0.05){v.onseeked=grab;st=setTimeout(grab,5000);/* Suchen hängt? dann das aktuelle Bild nehmen */try{v.currentTime=seekTo;}catch(e){grab();}}else grab();};
+  v.src=url;try{v.load();}catch(e){/* still */}});}
+
+/* ================= Umwandeln (ffmpeg.wasm) =================
+   Für Videos, die der Browser nicht abspielen kann (meist HEVC/H.265 vom iPhone in Chrome, Edge oder Firefox).
+   Das Umwandlungsprogramm (ca. 32 MB) wird erst bei Bedarf aus dem Internet geladen und läuft nur hier im Browser –
+   das Video selbst wird nicht hochgeladen. Ergebnis: MP4 (H.264/AAC), längste Seite höchstens 1920 px. */
+const FF_VER='0.12.10',FF_BASES=[`https://cdn.jsdelivr.net/npm/@ffmpeg/core@${FF_VER}/dist/umd/`,`https://unpkg.com/@ffmpeg/core@${FF_VER}/dist/umd/`];
+const FF_WORKER=`let core=null;
+self.onmessage=async e=>{const m=e.data;try{
+  if(m.t==='load'){core=await createFFmpegCore({wasmBinary:m.wasm,mainScriptUrlOrBlob:'core.js#'+btoa(JSON.stringify({wasmURL:'core.wasm'}))});
+    core.setLogger(l=>postMessage({t:'log',msg:l.message}));core.setProgress(p=>postMessage({t:'prog',time:p.time}));postMessage({t:'ok'});return;}
+  if(m.t==='conv'){const FS=core.FS;try{FS.mkdir('/in');}catch(x){}FS.mount(FS.filesystems.WORKERFS,{files:[m.file]},'/in');
+    let ret;try{core.reset();ret=core.exec(...m.args.map(a=>a==='%IN%'?'/in/'+m.file.name:a));}finally{try{FS.unmount('/in');}catch(x){}}
+    let out=null;try{out=FS.readFile('/out.mp4');FS.unlink('/out.mp4');}catch(x){}
+    if(ret!==0||!out||!out.length){postMessage({t:'err',msg:'ret '+ret});return;}
+    postMessage({t:'done',out},[out.buffer]);}
+}catch(err){postMessage({t:'err',msg:String(err&&err.message||err)});}};`;
+let ffWorker=null,ffReady=null,ffUrls=null;
+/* Programmteile laden (als Blob). Hinweis: Bei lokal geöffneter Datei (file://) darf der Hintergrundprozess nichts nachladen –
+   deshalb wird das Programm direkt in den Prozess eingebettet und die WebAssembly-Datei als Daten übergeben. */
+async function ffFetch(name,type,onP){let last;
+  for(const base of FF_BASES){try{const r=await fetch(base+name);if(!r.ok)throw new Error('HTTP '+r.status);
+      const total=+r.headers.get('content-length')||0;if(!r.body||!total){const b=await r.blob();onP(1);return new Blob([b],{type});}
+      const rd=r.body.getReader(),parts=[];let got=0;for(;;){const {done,value}=await rd.read();if(done)break;parts.push(value);got+=value.length;onP(Math.min(1,got/total));}
+      return new Blob(parts,{type});}catch(e){last=e;}}
+  throw gErr('Das Umwandlungsprogramm konnte nicht aus dem Internet geladen werden ('+errText(last)+'). Bitte die Internetverbindung prüfen.');}
+function ffLoad(onP){if(ffReady)return ffReady;
+  ffReady=(async()=>{if(typeof WebAssembly!=='object'||typeof Worker==='undefined')throw gErr('Dieser Browser kann keine Umwandlung durchführen (WebAssembly fehlt).');
+    if(!ffUrls){const core=await (await ffFetch('ffmpeg-core.js','text/javascript',p=>onP(p*.05))).text();const wasm=await (await ffFetch('ffmpeg-core.wasm','application/wasm',p=>onP(.05+p*.95))).arrayBuffer();ffUrls={core,wasm};}
+    let w;try{w=new Worker(URL.createObjectURL(new Blob([ffUrls.core,'\n',FF_WORKER],{type:'text/javascript'})));}catch(e){throw gErr('Die Umwandlung kann in diesem Browser nicht gestartet werden: '+errText(e));}
+    await new Promise((res,rej)=>{w.onmessage=e=>{if(e.data.t==='ok')res();else if(e.data.t==='err')rej(gErr('Umwandlungsprogramm startet nicht: '+e.data.msg));};w.onerror=e=>rej(gErr('Umwandlungsprogramm startet nicht: '+(e.message||'unbekannt')));const wasm=ffUrls.wasm.slice(0);w.postMessage({t:'load',wasm},[wasm]);});
+    ffWorker=w;return w;})();
+  ffReady.catch(()=>{ffReady=null;});return ffReady;}
+function ffKill(){if(ffWorker){ffWorker.terminate();ffWorker=null;}ffReady=null;}
+/* Eine Datei umwandeln → File (MP4). onP(0…1); ctl.abort() bricht ab */
+async function ffConvert(file,onP,ctl){const w=await ffLoad(()=>{});let dur=0;const log=[];
+  return new Promise((res,rej)=>{let fin=false;
+    ctl.abort=()=>{if(fin)return;fin=true;ffKill();rej(Object.assign(gErr('Abgebrochen'),{aborted:true}));};
+    w.onmessage=e=>{const m=e.data;if(fin)return;
+      if(m.t==='log'){log.push(m.msg);if(log.length>40)log.shift();const d=/Duration: (\d+):(\d+):([\d.]+)/.exec(m.msg);if(d&&!dur)dur=(+d[1])*3600+(+d[2])*60+(+d[3]);}
+      else if(m.t==='prog'){if(dur&&m.time>0)onP(Math.min(1,m.time/1e6/dur));}
+      else if(m.t==='done'){fin=true;const base=String(file.name||'Video').replace(/\.[^.]+$/,'');res(new File([m.out],base+'.mp4',{type:'video/mp4'}));}
+      else if(m.t==='err'){fin=true;const hint=log.filter(l=>/error|invalid|not supported|could not|unknown/i.test(l)).slice(-2).join(' · ');rej(gErr('Umwandlung fehlgeschlagen'+(hint?': '+hint:' – die Datei ist vermutlich beschädigt.')));}};
+    w.onerror=e=>{if(fin)return;fin=true;ffKill();rej(gErr('Umwandlung abgestürzt – vermutlich ist das Video zu groß für dieses Gerät. ('+(e.message||'')+')'));};
+    w.postMessage({t:'conv',file,args:['-i','%IN%','-map','0:v:0','-map','0:a:0?','-vf',"scale=w='if(gte(iw,ih),min(1920,iw),-2)':h='if(gte(iw,ih),-2,min(1920,ih))'",'-c:v','libx264','-preset','ultrafast','-crf','20','-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart','/out.mp4']});});}
+/* Bestätigungsfenster im Stil der Jugendverwaltung → Promise<boolean> */
+function askConfirm(title,html,okLabel){return new Promise(resolve=>{const m=document.createElement('div');m.className='modal-overlay';m.setAttribute('role','dialog');m.setAttribute('aria-modal','true');
+  m.innerHTML=`<div class="modal-content" style="max-width:540px;border-top:5px solid var(--v-orange)"><h2>${esc(title)}</h2>${html}<div class="modal-actions"><button type="button" class="btn-secondary" data-x>Nicht umwandeln</button><button type="button" data-ok>${esc(okLabel)}</button></div></div>`;
+  const close=v=>{m.remove();document.removeEventListener('keydown',k);resolve(v);};const k=e=>{if(e.key==='Escape')close(false);};document.addEventListener('keydown',k);
+  m.querySelector('[data-x]').onclick=()=>close(false);m.querySelector('[data-ok]').onclick=()=>close(true);m.onclick=e=>{if(e.target===m)close(false);};document.body.appendChild(m);setTimeout(()=>m.querySelector('[data-ok]').focus(),30);});}
+async function wmConvertFiles(files){
+  const list=files.map(f=>`<li><b>${esc(f.name)}</b><span>${esc(fmtSize(f.size))}</span></li>`).join('');
+  const ok=await askConfirm(files.length===1?'Video umwandeln?':`${files.length} Videos umwandeln?`,
+    `<p class="modal-subtitle" style="font-size:14px">Diese${files.length===1?'s Video kann':' Videos kann'} dieser Browser nicht direkt abspielen – meist ist es das HEVC-Format (H.265) vom iPhone. Die App kann ${files.length===1?'es':'sie'} hier im Browser in MP4 (H.264) umwandeln.</p><ul class="err-list">${list}</ul>
+     <p class="err-help">Beim ersten Mal wird das Umwandlungsprogramm (ca. 32 MB) aus dem Internet geladen. Die Umwandlung dauert etwa 1–3× so lange wie das Video (am Handy länger). Das Video selbst wird <b>nicht</b> hochgeladen.<br>Alternative: Das Video in Safari öffnen oder am iPhone unter Einstellungen → Kamera → Formate „Maximale Kompatibilität“ wählen.</p>`,'🔄 Jetzt umwandeln');
+  if(!ok)return{items:[],bad:[],declined:true};
+  const items=[],bad=[],ctl={};let aborted=false;
+  showBusy('Umwandlungsprogramm wird geladen …',{progress:true,note:'Bitte diesen Tab geöffnet lassen.',onCancel:()=>{aborted=true;if(ctl.abort)ctl.abort();else{ffKill();hideBusy();}}});
+  try{try{await ffLoad(p=>setBusy(p>=1?'Umwandlungsprogramm wird gestartet …':`Umwandlungsprogramm wird geladen … ${Math.round(p*100)} %`,p));}
+    catch(e){if(!aborted)bad.push(...files.map(f=>({file:f.name,msg:errText(e)})));return{items,bad};}
+    for(let n=0;n<files.length&&!aborted;n++){const f=files[n],pre=files.length>1?`Video ${n+1} von ${files.length}: `:'';setBusy(pre+'wird umgewandelt … 0 %',0);
+      try{const out=await ffConvert(f,p=>setBusy(`${pre}wird umgewandelt … ${Math.round(p*100)} %`,p),ctl);delete ctl.abort;
+        const url=URL.createObjectURL(out);try{const r=await wmLoadVideo(url);items.push({id:uid(),kind:'video',name:f.name+' (umgewandelt)',size:out.size,url,poster:r.poster,w:r.w,h:r.h,duration:r.duration,view:'logo',focus:{x:.5,y:.5},zoom:1});}
+        catch(e){URL.revokeObjectURL(url);throw gErr('Das umgewandelte Video lässt sich nicht öffnen: '+errText(e));}}
+      catch(e){delete ctl.abort;if(e&&e.aborted){aborted=true;break;}bad.push({file:f.name,msg:errText(e)});}}
+  }finally{hideBusy();}
+  if(aborted)toast('Umwandlung abgebrochen.','warnung');
+  return{items,bad};}
 async function wmAddFiles(files){if(!files.length)return;if(wmBusy)return toast('Bitte warten, bis die laufende Erzeugung fertig ist.','warnung');
-  const bad=[],ok=[];
+  const bad=[],ok=[],conv=[];wmBusy=true;
+  try{
   files.forEach(f=>{if(isVideoFile(f)||isImageFile(f)){if(!f.size)bad.push({file:f.name,msg:'Die Datei ist leer (0 Byte).'});else ok.push(f);}
     else bad.push({file:f.name||'Datei',msg:'Kein Foto und kein Video – diese Datei kann nicht verwendet werden.'});});
   if(ok.length){showBusy(ok.length>1?`${ok.length} Dateien werden geladen …`:'Datei wird geladen …',{progress:ok.length>1});
     try{for(let n=0;n<ok.length;n++){const f=ok[n];setBusy(null,n/ok.length);const url=URL.createObjectURL(f);
       try{if(isVideoFile(f)){const r=await wmLoadVideo(url);wmItems.push({id:uid(),kind:'video',name:f.name||'Video',size:f.size,url,poster:r.poster,w:r.w,h:r.h,duration:r.duration,view:'logo',focus:{x:.5,y:.5},zoom:1});}
         else{const img=await wmLoadImage(url);wmItems.push({id:uid(),kind:'image',name:f.name||'Foto',size:f.size,url,img,w:img.naturalWidth,h:img.naturalHeight,view:'logo',focus:{x:.5,y:.5},zoom:1});}}
-      catch(e){URL.revokeObjectURL(url);let msg=errText(e);if(!isVideoFile(f)&&/\.(heic|heif)$/i.test(f.name||''))msg='HEIC-Fotos kann dieser Browser nicht öffnen. Bitte als JPG speichern (iPhone: Einstellungen → Kamera → Formate → „Maximale Kompatibilität“) oder Safari verwenden.';bad.push({file:f.name,msg});}}}
+      catch(e){URL.revokeObjectURL(url);if(e&&e.conv&&isVideoFile(f)){conv.push(f);continue;}
+        let msg=errText(e);if(!isVideoFile(f)&&/\.(heic|heif)$/i.test(f.name||''))msg='HEIC-Fotos kann dieser Browser nicht öffnen. Bitte als JPG speichern (iPhone: Einstellungen → Kamera → Formate → „Maximale Kompatibilität“) oder Safari verwenden.';bad.push({file:f.name,msg});}}}
     finally{hideBusy();}}
+  if(conv.length){wmSyncViews();renderWm();const r=await wmConvertFiles(conv);wmItems.push(...r.items);bad.push(...r.bad);
+    if(r.declined)bad.push(...conv.map(f=>({file:f.name,msg:'Nicht umgewandelt – dieser Browser kann das Videoformat (meist HEVC/H.265) nicht direkt abspielen.'})));}
+  }finally{wmBusy=false;}
   wmSyncViews();renderWm();
   const loaded=files.length-bad.length;if(loaded&&bad.length)toast(`${loaded} von ${files.length} Dateien geladen.`,'warnung');
   if(bad.length)showError(bad.length===1?'Datei konnte nicht geladen werden':`${bad.length} Dateien konnten nicht geladen werden`,bad,'Tipp: Fotos als JPG oder PNG, Videos als MP4 (H.264) speichern. Mit einem anderen Browser (Chrome, Edge, Safari) klappt es oft auch.');}
@@ -483,9 +567,8 @@ function wmRenderVideo(it,ac,onProgress,ctl){return new Promise((res,rej)=>{
   const f=wmFrameOf(it,0);f.W=Math.max(2,f.W-f.W%2);f.H=Math.max(2,f.H-f.H%2);/* Videokodierer brauchen gerade Maße */
   let ov;try{ov=wm7Overlay(f.W,f.H,wmOpts(it),wmLogoImg);}catch(e){return rej(e);}
   const cv=document.createElement('canvas');cv.width=f.W;cv.height=f.H;const ctx=cv.getContext('2d',{alpha:false});
-  const v=document.createElement('video');v.playsInline=true;v.preload='auto';v.src=it.url;
-  /* auf der Seite, aber unsichtbar – manche Browser spielen sonst nicht flüssig ab */
-  v.style.cssText='position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none';document.body.appendChild(v);
+  /* auf der Seite, aber unsichtbar – manche Browser spielen sonst nicht flüssig ab; Ton an (läuft nur in die Aufnahme) */
+  const v=wmHiddenVideo();v.muted=false;v.defaultMuted=false;v.removeAttribute('muted');v.src=it.url;try{v.load();}catch(e){/* still */}
   let rec=null,chunks=[],finished=false,loop=0,srcNode=null,watch=0,lastT=-1,lastMove=Date.now(),vis=null;
   const cleanup=()=>{clearInterval(watch);if(vis)document.removeEventListener('visibilitychange',vis);try{v.pause();}catch(e){/* still */}
     if(loop&&v.cancelVideoFrameCallback)try{v.cancelVideoFrameCallback(loop);}catch(e){/* still */}
@@ -509,14 +592,17 @@ function wmRenderVideo(it,ac,onProgress,ctl){return new Promise((res,rej)=>{
     rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};
     rec.onerror=e=>fail(gErr('Die Videoaufnahme ist fehlgeschlagen: '+errText(e.error||e)));
     rec.onstop=()=>{if(finished)return;finished=true;cleanup();const b=new Blob(chunks,{type:type.split(';')[0]});
-      if(!b.size)return rej(gErr('Das erzeugte Video ist leer – bitte erneut versuchen und den Tab dabei im Vordergrund lassen.'));res({blob:b,ext:wmVidExt(type),W:f.W,H:f.H,audio:audioOk});};
+      if(!b.size)return rej(gErr('Das erzeugte Video ist leer – bitte erneut versuchen und den Tab dabei im Vordergrund lassen.'));res({blob:b,ext:wmVidExt(type),W:f.W,H:f.H,audio:audioOk&&!v.muted});};
     const dur=isFinite(v.duration)&&v.duration>0?v.duration:(it.duration||0);
     const tick=()=>{if(finished)return;try{paint();}catch(e){return fail(e);}if(dur)onProgress(v.currentTime/dur);
       loop=v.requestVideoFrameCallback?v.requestVideoFrameCallback(tick):requestAnimationFrame(tick);};
     v.onended=()=>{if(finished)return;try{paint();}catch(e){/* letztes Bild */}onProgress(1);setTimeout(()=>{try{if(rec.state!=='inactive')rec.stop();}catch(e){fail(e);}},150);};
     v.currentTime=0;
     rec.start(1000);
-    try{await v.play();}catch(e){throw e&&e.name==='NotAllowedError'?e:gErr('Das Video konnte nicht abgespielt werden: '+errText(e));}
+    try{await v.play();}catch(e){
+      /* Browser verbietet Abspielen mit Ton → stumm versuchen (Video dann ohne Ton) */
+      if(e&&e.name==='NotAllowedError'){v.muted=true;try{await v.play();audioOk=false;}catch(e2){throw e2;}}
+      else throw gErr('Das Video konnte nicht abgespielt werden: '+errText(e));}
     tick();
     /* Hintergrund-Tab: Bildwiederholung bleibt stehen → Video anhalten, bis der Tab wieder sichtbar ist */
     vis=()=>{if(finished)return;if(document.hidden){v.pause();try{rec.pause();}catch(e){/* still */}}else{try{rec.resume();}catch(e){/* still */}lastMove=Date.now();v.play().catch(()=>{});}};
@@ -538,7 +624,7 @@ async function wmSave(idx){if(wmBusy)return;
       try{
         if(it.kind==='video'){setBusy(pre+'Video … 0 %',n/list.length);
           const r=await wmRenderVideo(it,ac,p=>setBusy(`${pre}Video … ${Math.round(p*100)} %`,(n+p)/list.length),ctl);
-          wmDownloadBlob(r.blob,wmFileName(it,i,r.ext));ok++;}
+          wmDownloadBlob(r.blob,wmFileName(it,i,r.ext));ok++;if(!r.audio)toast(`„${it.name}“ wurde ohne Ton gespeichert (Browser hat den Ton blockiert).`,'warnung');}
         else{setBusy(pre+'Bild wird erzeugt …',n/list.length);await new Promise(r=>setTimeout(r,30));const cv=wmDraw(it);const blob=await wmToBlob(cv);cv.width=cv.height=0;wmDownloadBlob(blob,wmFileName(it,i,'jpg'));ok++;setBusy(null,(n+1)/list.length);}
         if(list.length>1)await new Promise(r=>setTimeout(r,400));/* Browser lassen mehrere Downloads nacheinander zu */
       }catch(e){if(e&&e.aborted){aborted=true;break;}console.error(e);errs.push({file:it.name,msg:errText(e)});}}
