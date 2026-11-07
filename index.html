@@ -36,7 +36,8 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .btn-danger{background:linear-gradient(#ef4444,#dc2626)}
 .btn-sm{padding:4px 12px;font-size:12px;border-radius:9px}
 input[type=text],input[type=password]{font-family:inherit;font-size:14px;padding:10px 14px;border:1px solid var(--bd-input);border-radius:10px;background:var(--bg-surface);color:var(--tx-1);width:100%}
-input[type=text]:focus,input[type=password]:focus{outline:none;border-color:var(--j-sky);box-shadow:var(--j-ring)}
+textarea{font-family:inherit;font-size:14px;padding:10px 14px;border:1px solid var(--bd-input);border-radius:10px;background:var(--bg-surface);color:var(--tx-1);width:100%;resize:vertical;min-height:62px;line-height:1.35}
+textarea:focus,input[type=text]:focus,input[type=password]:focus{outline:none;border-color:var(--j-sky);box-shadow:var(--j-ring)}
 input[type=checkbox]{width:16px;height:16px;accent-color:var(--v-blue)}
 /* --- Kopfleiste --- */
 .global-nav-bar{position:fixed;top:0;left:0;right:0;z-index:100;height:var(--navh);display:flex;align-items:center;padding:8px 18px;background:linear-gradient(100deg,var(--v-deep) 0%,var(--v-navy) 55%,var(--v-blue) 100%);box-shadow:0 2px 10px rgba(0,26,64,.25)}
@@ -173,7 +174,7 @@ input[type=checkbox]{width:16px;height:16px;accent-color:var(--v-blue)}
   <div class="thw-lock-card">
     <div class="lk-logo" role="img" aria-label="THW-Jugend"></div>
     <h1>Wasserzeichen</h1>
-    <p>Bitte das Passwort eingeben – dasselbe wie für den Admin-Zugang der THW-Jugendverwaltung.</p>
+    <p>Bitte das Passwort eingeben.</p>
     <form id="lockForm" autocomplete="off">
       <input type="password" id="lockPw" placeholder="Passwort" autocomplete="current-password" aria-label="Passwort">
       <div class="err" id="lockErr"></div>
@@ -2166,9 +2167,8 @@ function setBusy(text,p){if(!busyEl)return;if(text!=null)busyEl.querySelector('[
 function hideBusy(){if(busyEl){busyEl.remove();busyEl=null;}}
 
 /* ================= Zugang =================
-   Gleiches Passwort wie der Admin-Zugang der THW-Jugendverwaltung (Benutzer „admin“).
-   Gespeichert ist nur der SHA-256-Prüfwert von „admin:<Passwort>“, nicht das Passwort. */
-const ADMIN_HASH='e2fb9a2567fa50281f6290c7c77b44fa7d7a1b70ab4d93ac9dde2bb4aa25bd2b';
+   Eigenes Passwort der Wasserzeichen-App. Gespeichert ist nur der SHA-256-Prüfwert von „admin:<Passwort>“, nicht das Passwort. */
+const ADMIN_HASH='4134cc2ae451b1bd262d3d8644bc440e262a0e346ebfe8fb0e9f9315acbb4558';
 function sha256Hex(str){
   const b=new TextEncoder().encode(str),K=[],H=[];const frac=x=>((x-Math.floor(x))*4294967296)|0;
   for(let n=2,c=0;c<64;n++){let p=true;for(let i=2;i*i<=n;i++)if(n%i===0){p=false;break;}if(p){if(c<8)H[c]=frac(Math.sqrt(n));K[c++]=frac(Math.cbrt(n));}}
@@ -2188,13 +2188,13 @@ let fails=0,blockUntil=0;
 function navDate(){const d=new Date();$('navDate').innerHTML=`<b>${esc(d.toLocaleDateString('de-DE',{weekday:'long'}))}</b>${esc(d.toLocaleDateString('de-DE',{day:'numeric',month:'long',year:'numeric'}))}`;}
 function unlock(){$('lock').remove();$('app').hidden=false;navDate();setInterval(navDate,60000);renderWm();}
 function initLock(){
-  if(ssGet('wmUnlocked')==='1')return unlock();
+  if(ssGet('wmUnlocked2')==='1')return unlock();
   const pw=$('lockPw'),err=$('lockErr');setTimeout(()=>pw.focus(),50);
   $('lockForm').onsubmit=ev=>{ev.preventDefault();
     if(Date.now()<blockUntil){err.textContent=`Zu viele Fehlversuche – bitte ${Math.ceil((blockUntil-Date.now())/1000)} s warten.`;return;}
     if(!pw.value){err.textContent='Bitte das Passwort eingeben.';return;}
     if(sha256Hex('admin:'+pw.value)!==ADMIN_HASH){fails++;if(fails>=5){blockUntil=Date.now()+30000;fails=0;}err.textContent='Das Passwort ist falsch.';pw.value='';pw.focus();return;}
-    fails=0;ssSet('wmUnlocked','1');unlock();};
+    fails=0;ssSet('wmUnlocked2','1');unlock();};
 }
 
 /* ================= WASSERZEICHEN – Zeichenkern „Senkrechter Titel“ (aus der THW-Jugendverwaltung) =================
@@ -2216,7 +2216,7 @@ function wm7Overlay(W,H,o,L){
   const cv=document.createElement('canvas');cv.width=W;cv.height=H;const ctx=cv.getContext('2d');if(!ctx)throw gErr('Zeichenfläche konnte nicht angelegt werden (zu wenig Speicher?).');
   ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
   const u=Math.min(W,H)/100,c=WM7_ORG;
-  const title=o.view==='text'?String(o.title||'').trim().toUpperCase():'',sub=o.view==='text'?String(o.sub||'').trim():'';
+  const title=o.view==='text'?String(o.title||'').trim().toUpperCase():'',subL=o.view==='text'?String(o.sub||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean).slice(0,2):[],sub=subL.join(' ');
   const TF=s=>`800 ${s}px 'Barlow Condensed', 'Arial Narrow', Arial, sans-serif`,SF=s=>`600 ${s}px Barlow, Arial, sans-serif`;
   ctx.textBaseline='alphabetic';ctx.textAlign='left';
   /* dezente Verläufe für Lesbarkeit: unten immer (Logo), rechts nur mit Thema */
@@ -2225,10 +2225,19 @@ function wm7Overlay(W,H,o,L){
     ctx.save();ctx.translate(W-4.5*u,H-4*u);ctx.rotate(-Math.PI/2);let ts=10*u;ctx.font=TF(ts);const tw=ctx.measureText(title).width,max=H*.72;if(tw>max){ts*=max/tw;ctx.font=TF(ts);}
     ctx.fillStyle='#fff';ctx.fillText(title,0,0);ctx.fillStyle=c.acc;ctx.fillRect(0,-ts*.95-2*u,14*u,1*u);ctx.restore();}
   /* Logo groß unten links (mit Schatten), Unterzeile darunter */
-  const lh=9.5*u,lw=lh*L.naturalWidth/L.naturalHeight,ly=H-lh-(sub?10.5*u:4.5*u);
+  /* Unterzeile: 1–2 Zeilen (Umbruch wie eingegeben) auf einer Fläche in THW-Blau mit orangem Streifen – gut lesbar auf jedem Foto */
+  let ss=3.4*u,box=null;
+  if(subL.length){ctx.font=SF(ss);const padX=1.6*u,padY=1.0*u,bar=.7*u,maxW=W-(title?20*u:8*u)-2*padX-bar,wid=Math.max(...subL.map(s=>ctx.measureText(s).width));
+    if(wid>maxW){ss*=maxW/wid;ctx.font=SF(ss);}
+    const lineH=ss*1.25,tw=Math.max(...subL.map(s=>ctx.measureText(s).width)),bw=bar+padX*2+tw,bh=padY*2+lineH*subL.length;
+    box={x:4*u,y:H-3.5*u-bh,w:bw,h:bh,padX,padY,bar,lineH};}
+  const lh=9.5*u,lw=lh*L.naturalWidth/L.naturalHeight,ly=box?box.y-1.6*u-lh:H-lh-4.5*u;
   ctx.save();ctx.shadowColor=c.glow;ctx.shadowBlur=lh*.12;ctx.drawImage(L,4*u,ly,lw,lh);ctx.restore();
-  if(sub){let ss=3.4*u;ctx.font=SF(ss);const sw=ctx.measureText(sub).width,max=W-(title?20*u:8*u);if(sw>max){ss*=max/sw;ctx.font=SF(ss);}
-    ctx.save();ctx.shadowColor='rgba(0,0,0,.7)';ctx.shadowBlur=1*u;ctx.fillStyle=c.sub;ctx.fillText(sub,4*u,H-4.5*u);ctx.restore();}
+  if(box){const r=Math.min(1.2*u,box.h/4);ctx.save();ctx.shadowColor='rgba(0,0,0,.35)';ctx.shadowBlur=1.2*u;ctx.fillStyle='rgba(0,62,144,.9)';
+    ctx.beginPath();ctx.moveTo(box.x,box.y);ctx.lineTo(box.x+box.w-r,box.y);ctx.quadraticCurveTo(box.x+box.w,box.y,box.x+box.w,box.y+r);ctx.lineTo(box.x+box.w,box.y+box.h-r);ctx.quadraticCurveTo(box.x+box.w,box.y+box.h,box.x+box.w-r,box.y+box.h);ctx.lineTo(box.x,box.y+box.h);ctx.closePath();ctx.fill();ctx.restore();
+    ctx.fillStyle=c.acc;ctx.fillRect(box.x,box.y,box.bar,box.h);
+    ctx.save();ctx.font=SF(ss);ctx.fillStyle=c.sub;ctx.textBaseline='alphabetic';
+    subL.forEach((s,k)=>ctx.fillText(s,box.x+box.bar+box.padX,box.y+box.padY+box.lineH*k+ss*1.0));ctx.restore();}
   /* Bildherkunft (z. B. „Foto: Name“) klein oben rechts – nur Text, niemals ein Logo */
   const credit=String(o.credit||'').trim();
   if(credit){let cs=2.6*u;ctx.font=SF(cs);const cw=ctx.measureText(credit).width,max=W*.6;if(cw>max){cs*=max/cw;ctx.font=SF(cs);}
@@ -2276,7 +2285,7 @@ function renderWm(){
     <div class="wm-row"><span class="wm-lbl">Für</span><div class="wm-seg"><span class="on">⚙️ THW-Jugend</span></div></div>
     <div class="wm-row"><span class="wm-lbl">Format</span><div class="wm-seg" role="radiogroup">${Object.entries(WM_FORMATS).map(([k,l])=>`<button type="button" class="${wmFormat===k?'on':''}" data-wmfmt="${k}" aria-pressed="${wmFormat===k}">${k==='square'?'⬛':'📱'} ${l}</button>`).join('')}</div></div>
     <div class="wm-row wm-txt"><label>Dienstthema <small>(senkrecht am rechten Rand)</small><input type="text" id="wmTitle" maxlength="60" value="${esc(wmTitle)}" placeholder="z. B. Jugenddienst"></label>
-      <label>Unterzeile <small>(kurz, unter dem Logo)</small><input type="text" id="wmSub" maxlength="80" value="${esc(wmSub)}" placeholder="z. B. Einsatzstellenabsicherung · ${esc(todayDE())}"></label></div>
+      <label>Unterzeile <small>(unter dem Logo, farbig hinterlegt – bis zu 2 Zeilen, Umbruch mit Enter)</small><textarea id="wmSub" rows="2" maxlength="120" placeholder="z. B. Einsatzstellenabsicherung&#10;Ausbildung · ${esc(todayDE())}">${esc(wmSub)}</textarea></label></div>
     <div class="wm-row wm-credit"><label class="wm-check"><input type="checkbox" id="wmCreditOn" ${wmCredit.on?'checked':''}> Bildherkunft sichtbar <small>(klein oben rechts)</small></label><input type="text" id="wmCreditText" maxlength="60" value="${esc(wmCredit.text||'')}" placeholder="z. B. Foto: Max Mustermann" ${wmCredit.on?'':'disabled'}></div>
     <div class="wm-row"><button type="button" id="wmPickBtn">📷 Fotos &amp; Videos auswählen</button>${has?`<button type="button" class="btn-secondary" id="wmAutoBtn" title="1. Bild mit Thema, alle weiteren nur mit Logo">↺ Ansichten automatisch</button><button type="button" class="btn-secondary" id="wmClearBtn">✕ Auswahl leeren</button>`:''}<small class="wm-hint">Fotos und Videos werden nur hier im Browser bearbeitet – nichts wird hochgeladen.</small></div>
     ${hasVid?`<div class="wm-note">🎬 <span>Videos werden Bild für Bild mit dem Videochip des Geräts berechnet und als <b>MP4</b> gespeichert – schnell, ruckelfrei, mit Ton, im Instagram-Format (1080 × 1080 bzw. 1080 × 1920) und mit kleiner Dateigröße. Nur wenn der Browser das nicht kann, wird einmalig ein Videoprogramm (ca. 32 MB) geladen – das ist dann deutlich langsamer. Das Video wird nicht hochgeladen.</span></div>`:''}</div>
@@ -2288,7 +2297,8 @@ function renderWm(){
   :`<div class="wm-drop" id="wmDrop" role="button" tabindex="0">📷 Fotos und Videos hierher ziehen oder „Fotos &amp; Videos auswählen“ – mehrere auf einmal möglich.<br><small>1. Bild mit Dienstthema und Unterzeile, weitere Bilder nur mit Logo – pro Bild umstellbar.</small></div>`}`;
   const q=s=>box.querySelector(s);
   box.querySelectorAll('[data-wmfmt]').forEach(b=>b.onclick=()=>{wmFormat=b.dataset.wmfmt;lsSave('wmFormat',wmFormat);wmItems.forEach(it=>{it.focus={x:.5,y:.5};it.zoom=1;});renderWm();});
-  q('#wmTitle').oninput=e=>{wmTitle=e.target.value;wmSyncViews();wmPreviews();};q('#wmSub').oninput=e=>{wmSub=e.target.value;wmSyncViews();wmPreviews();};
+  q('#wmTitle').oninput=e=>{wmTitle=e.target.value;wmSyncViews();wmPreviews();};q('#wmSub').oninput=e=>{const ta=e.target,v=ta.value.replace(/\r/g,'').split('\n');if(v.length>2){const pos=ta.selectionStart;ta.value=v.slice(0,2).join('\n')+(v.slice(2).join(' ')?' '+v.slice(2).join(' '):'');ta.selectionStart=ta.selectionEnd=Math.min(pos,ta.value.length);}wmSub=ta.value;wmSyncViews();wmPreviews();};
+  q('#wmSub').onkeydown=e=>{if(e.key==='Enter'&&e.target.value.split('\n').length>=2){e.preventDefault();toast('Die Unterzeile hat höchstens 2 Zeilen.','warnung');}};
   q('#wmCreditOn').onchange=e=>{wmCredit.on=e.target.checked;q('#wmCreditText').disabled=!wmCredit.on;if(wmCredit.on)q('#wmCreditText').focus();saveWmCredit();wmPreviews();};
   q('#wmCreditText').oninput=e=>{wmCredit.text=e.target.value;saveWmCredit();wmPreviews();};
   q('#wmPickBtn').onclick=wmPick;
@@ -2735,7 +2745,7 @@ async function wmSave(idx){if(wmBusy)return;
     if(aborted)toast('Erzeugen abgebrochen – es wurde nichts gespeichert.','warnung');
     if(errs.length)showError(errs.length===1?'Datei konnte nicht erzeugt werden':`${errs.length} Dateien konnten nicht erzeugt werden`,errs,ok?`${ok} andere Datei${ok===1?' wurde':'en wurden'} trotzdem gespeichert.`:'');}}
 
-$('logoutBtn').onclick=()=>{ssSet('wmUnlocked',null);wmClear();location.reload();};
+$('logoutBtn').onclick=()=>{ssSet('wmUnlocked2',null);wmClear();location.reload();};
 initLock();
 </script>
 </body>
